@@ -55,6 +55,7 @@
 #include <ksi/tlv_element.h>
 #include <ksi/hash.h>
 #include <ksi/net_async.h>
+#include <ksi/net_ha.h>
 #include <ksi/net_uri.h>
 #include <ksi/signature_builder.h>
 #include "rsyslog.h"
@@ -67,8 +68,6 @@
 #endif
 
 #define KSI_BUF_SIZE 4096
-
-#define debug_report(ctx, args...) do { if(ctx->debug>0) report(ctx, args); } while(0)
 
 static const char *blockFileSuffix = ".logsig.parts/blocks.dat";
 static const char *sigFileSuffix = ".logsig.parts/block-signatures.dat";
@@ -141,13 +140,27 @@ reportErr(rsksictx ctx, const char *const errmsg)
 done:	return;
 }
 
+static const char *level2str(int level) {
+        switch (level) {
+                case KSI_LOG_DEBUG: return "DEBUG";
+                case KSI_LOG_INFO: return "INFO";
+                case KSI_LOG_NOTICE: return "NOTICE";
+                case KSI_LOG_WARN: return "WARN";
+                case KSI_LOG_ERROR: return "ERROR";
+                default: return "UNKNOWN LOG LEVEL";
+        }
+}
+
 void
 reportKSIAPIErr(rsksictx ctx, ksifile ksi, const char *apiname, int ecode)
 {
 	char errbuf[4096];
-	snprintf(errbuf, sizeof(errbuf), "%s[%s:%d]: %s",
+	char ksi_errbuf[4096];
+	KSI_ERR_getBaseErrorMessage(ctx->ksi_ctx, ksi_errbuf, sizeof(ksi_errbuf), NULL, NULL);
+	snprintf(errbuf, sizeof(errbuf), "%s[%s:%d]: %s, %s",
 		(ksi == NULL) ? (uchar*) "" : ksi->blockfilename,
-		apiname, ecode, KSI_getErrorString(ecode));
+		apiname, ecode, KSI_getErrorString(ecode), ksi_errbuf);
+
 	errbuf[sizeof(errbuf)-1] = '\0';
 	reportErr(ctx, errbuf);
 }
@@ -676,8 +689,6 @@ rsksiCtxNew(void) {
 	ctx->thread_started = false;
 	ctx->disabled = false;
 
-	debug_report(ctx, "debug: signer plugin loaded");
-
 	/*if (pthread_mutex_init(&ctx->module_lock, 0))
 		report(ctx, "pthread_mutex_init: %s", strerror(errno));
 	ctx->signer_queue = ProtectedQueue_new(10);*/
@@ -691,12 +702,52 @@ rsksiCtxNew(void) {
 	return ctx;
 }
 
+int rsksiStreamLogger(void *logCtx, int logLevel, const char *message)
+{
+	char time_buf[32];
+	struct tm *tm_info;
+	time_t timer;
+	FILE *f = (FILE *)logCtx;
+
+	timer = time(NULL);
+
+	tm_info = localtime(&timer);
+	if (tm_info == NULL) {
+		return KSI_UNKNOWN_ERROR;
+	}
+
+	if (f != NULL) {
+		flockfile(f);  /* for thread safety */
+		if (strftime(time_buf, sizeof(time_buf), "%d.%m.%Y %H:%M:%S", tm_info)) {
+			if (fprintf(f, "%s [%s] %lu - %s\n", level2str(logLevel), time_buf, pthread_self(), message) > 0) { }
+		}
+		funlockfile(f);
+	}
+
+	return KSI_OK;
+}
+
 int
 rsksiInitModule(rsksictx ctx) {
 	int res = 0;
 	KSI_Config *config = NULL;
 	KSI_Integer *ksi_int = NULL;
 	uint64_t tmpInt;
+
+	if(ctx->debugFileName != NULL) {
+		ctx->debugFile = fopen(ctx->debugFileName, "w");
+		if(ctx->debugFile) {
+			res = KSI_CTX_setLoggerCallback(ctx->ksi_ctx, rsksiStreamLogger, ctx->debugFile);
+			if (res != KSI_OK)
+				reportKSIAPIErr(ctx, NULL, "Unable to set logger callback", res);
+			res = KSI_CTX_setLogLevel(ctx->ksi_ctx, ctx->debugLevel);
+			if (res != KSI_OK)
+				reportKSIAPIErr(ctx, NULL, "Unable to set log level", res);
+		}
+		else {
+			report(ctx, "Could not open logfile %s: %s", ctx->debugFileName, strerror(errno));
+		}
+	}
 
 	KSI_CTX_setOption(ctx->ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg));
 
@@ -805,7 +856,12 @@ rsksiSetHashFunction(rsksictx ctx, char *algName) {
 		report(ctx, "Hash function '%s' unknown - using default", algName);
 		ctx->hashAlg = KSI_HASHALG_SHA2_256;
 	} else {
-		ctx->hashAlg = id;
+		if(!KSI_isHashAlgorithmTrusted(id)) {
+			report(ctx, "Hash function '%s' is not trusted - using default", algName);
+			ctx->hashAlg = KSI_HASHALG_SHA2_256;
+		}
+		else
+			ctx->hashAlg = id;
 	}
 
 	if ((r = KSI_DataHasher_open(ctx->ksi_ctx, ctx->hashAlg, &ctx->hasher)) != KSI_OK) {
@@ -823,7 +879,12 @@ rsksiSetHmacFunction(rsksictx ctx, char *algName) {
 		report(ctx, "HMAC function '%s' unknown - using default", algName);
 		ctx->hmacAlg = KSI_HASHALG_SHA2_256;
 	} else {
-		ctx->hmacAlg = id;
+		if(!KSI_isHashAlgorithmTrusted(id)) {
+			report(ctx, "HMAC function '%s' is not trusted - using default", algName);
+			ctx->hmacAlg = KSI_HASHALG_SHA2_256;
+		}
+		else
+			ctx->hmacAlg = id;
 	}
 	return 0;
 }
@@ -870,12 +931,17 @@ rsksiCtxDel(rsksictx ctx) {
 	free(ctx->aggregatorUri);
 	free(ctx->aggregatorId);
 	free(ctx->aggregatorKey);
+	free(ctx->debugFileName);
 
 	if (ctx->random_source)
 		free(ctx->random_source);
 
 	KSI_DataHasher_free(ctx->hasher);
 	KSI_CTX_free(ctx->ksi_ctx);
+
+	if(ctx->debugFile!=NULL)
+		fclose(ctx->debugFile);
+
 	free(ctx);
 }
 
@@ -1200,16 +1266,10 @@ done:
 int
 rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 	int r;
+	char *strTmp, *strTmpUri;
 
 	if (!uri || !loginid || !key) {
 		ctx->disabled = true;
-		return KSI_INVALID_ARGUMENT;
-	}
-
-	r = KSI_CTX_setAggregator(ctx->ksi_ctx, uri, loginid, key);
-	if(r != KSI_OK) {
-		ctx->disabled = true;
-		reportKSIAPIErr(ctx, NULL, "KSI_CTX_setAggregator", r);
 		return KSI_INVALID_ARGUMENT;
 	}
 
@@ -1217,7 +1277,32 @@ rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 	ctx->aggregatorId = strdup(loginid);
 	ctx->aggregatorKey = strdup(key);
 
+	/* split the URI string up for possible HA endpoints */
+	strTmp = ctx->aggregatorUri;
+	while((strTmpUri = strsep(&strTmp, "|") ) != NULL
+		&& ctx->aggregatorEndpointCount < MAX_ENDPOINTS) {
+		ctx->aggregatorEndpoints[ctx->aggregatorEndpointCount] = strTmpUri;
+		ctx->aggregatorEndpointCount++;
+	}
+
+	r = KSI_CTX_setAggregator(ctx->ksi_ctx, ctx->aggregatorUri, loginid, key);
+	if(r != KSI_OK) {
+		ctx->disabled = true;
+		reportKSIAPIErr(ctx, NULL, "KSI_CTX_setAggregator", r);
+		return KSI_INVALID_ARGUMENT;
+	}
+
 	return r;
+}
+
+
+int
+rsksiSetDebugFile(rsksictx ctx, char *val) {
+	if(!val)
+		return KSI_INVALID_ARGUMENT;
+
+	ctx->debugFileName=strdup(val);
+	return KSI_OK;
 }
 
 bool add_queue_item(rsksictx ctx, QITEM_type type, void *arg, uint64_t intarg1, uint64_t intarg2) {
@@ -1369,7 +1454,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 	size_t p;
 
 	KSI_AsyncService_getPendingCount(as, &p);
-	debug_report(ctx, "debug: entering, pending: %zu", p);
 
 	/* Check if there are pending/available responses and associate them with the request items */
 	while(true) {
@@ -1379,7 +1463,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 			reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_run", tmpRes);
 
 		if (respHandle == NULL) { /* nothing received */
-			debug_report(ctx, "debug: dispatch returned NULL, p = %zu", p);
 			break;
 		}
 
@@ -1403,7 +1486,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 			KSI_AsyncHandle_free(respHandle);
 		}
 
-		debug_report(ctx, "debug: pending_requests: %zu", p);
 		item->status = QITEM_DONE;
 	}
 
@@ -1423,8 +1505,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		if(item->status != QITEM_WAITING)
 			continue;
 
-		debug_report(ctx, "debug: sending: %u", i);
-
 		CHECK_KSI_API(KSI_AggregationReq_new(ksi_ctx, &req), ctx, "KSI_AggregationReq_new");
 		CHECK_KSI_API(KSI_AggregationReq_setRequestHash((KSI_AggregationReq*)req,
 			KSI_DataHash_ref((KSI_DataHash*)item->arg)), ctx,
@@ -1440,7 +1520,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		res = KSI_AsyncService_addRequest(as, reqHandle); /* this can fail because of throttling */
 
 		if (res == KSI_OK) {
-			debug_report(ctx, "debug: sent: %u", i);
 			item->status = QITEM_SENT;
 
 			tmpRes=KSI_AsyncService_run(as, NULL, NULL);
@@ -1449,14 +1528,12 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 
 		} else {
 			KSI_AsyncHandle_free(reqHandle);
-			debug_report(ctx, "debug: Unable to add request, err=%d", item->ksi_status);
 			item->status = QITEM_DONE;
 			item->ksi_status = res;
 			break;
 		}
 	}
 
-	debug_report(ctx, "debug: queue size %zu", ProtectedQueue_count(ctx->signer_queue));
 
 	/* Save all consequent fulfilled responses in the front of the queue to the signature file */
 	while(ProtectedQueue_count(ctx->signer_queue)) {
@@ -1477,7 +1554,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		if(item->status != QITEM_DONE)
 			break;
 
-		//debug_report(ctx, "debug: saving %u, status %d", (unsigned)item->handle, item->ksi_status);
 		ProtectedQueue_popFront(ctx->signer_queue, (void**) &item);
 		save_response(ctx, outfile, item);
 
@@ -1494,8 +1570,6 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 
 cleanup:
 	KSI_AsyncService_getPendingCount(as, &p);
-	debug_report(ctx, "debug: leaving, pending: %zu, q. size %zu, ret: %d", p,
-		ProtectedQueue_count(ctx->signer_queue), ret);
 	return ret;
 }
 
@@ -1511,28 +1585,39 @@ void *signer_thread(void *arg) {
 	KSI_AsyncService *as = NULL;
 	int res = 0;
 	bool ret = false;
+	int i = 0, endpoints = 0;
 
 	ctx->thread_started = true;
-	debug_report(ctx, "debug: Starting signer thread");
 
 	CHECK_KSI_API(KSI_CTX_new(&ksi_ctx), ctx, "KSI_CTX_new");
+
+	if(ctx->debugFile) {
+		res = KSI_CTX_setLoggerCallback(ksi_ctx, rsksiStreamLogger, ctx->debugFile);
+		if (res != KSI_OK)
+			reportKSIAPIErr(ctx, NULL, "Unable to set logger callback", res);
+		res = KSI_CTX_setLogLevel(ksi_ctx, ctx->debugLevel);
+		if (res != KSI_OK)
+			reportKSIAPIErr(ctx, NULL, "Unable to set log level", res);
+	}
+
 	CHECK_KSI_API(KSI_CTX_setAggregator(ksi_ctx, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey),
 		ctx, "KSI_CTX_setAggregator");
 	CHECK_KSI_API(KSI_CTX_setOption(ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg)),
 		ctx, "KSI_CTX_setOption");
 
-	res = KSI_SigningAsyncService_new(ksi_ctx, &as);
+	res = KSI_SigningHighAvailabilityService_new(ksi_ctx, &as);
 	if (res != KSI_OK) {
 		reportKSIAPIErr(ctx, NULL, "KSI_SigningAsyncService_new", res);
 	}
 	else {
-		res = KSI_AsyncService_setEndpoint(as, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey);
-		if (res != KSI_OK) {
+		for (i = 0; i < ctx->aggregatorEndpointCount; i++) {
+			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
+			if (res != KSI_OK) {
 				//This can fail if the protocol is not supported by async api.
 				//in this case the plugin will fall back to sync api
-				KSI_AsyncService_free(as);
-			as=NULL;
-		} else {
+				continue;
+			}
+
 			res = KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_MAX_REQUEST_COUNT,
 				(void*) (ctx->max_requests));
 			if (res != KSI_OK)
@@ -1541,6 +1626,12 @@ void *signer_thread(void *arg) {
 			/* ingoring the possible error here */
 			KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
 				(void*) (ctx->max_requests * 5));
+			endpoints++;
+		}
+
+		if(endpoints == 0) { /* no endpoint accepted, deleting the service */
+			KSI_AsyncService_free(as);
+			as=NULL;
 		}
 	}
 
@@ -1549,7 +1640,6 @@ void *signer_thread(void *arg) {
 
 		/* Wait for a work item or timeout*/
 		ProtectedQueue_waitForItem(ctx->signer_queue, NULL, timeout * 1000);
-		debug_report(ctx, "debug: ProtectedQueue_waitForItem");
 		/* Check for block time limit*/
 		sigblkCheckTimeOut(ctx);
 
@@ -1587,18 +1677,15 @@ void *signer_thread(void *arg) {
 		if (ProtectedQueue_popFront(ctx->signer_queue, (void**) &item) != 0) {
 			if (item->type == QITEM_CLOSE_FILE) {
 				if (ksiFile) {
-					debug_report(ctx, "debug: sig-thread closing file %p", ksiFile);
 					fclose(ksiFile);
 					ksiFile = NULL;
 				}
 			} else if (item->type == QITEM_NEW_FILE) {
-				debug_report(ctx, "debug: sig-thread opening new file %p", item->arg);
 				ksiFile = (FILE*) item->arg;
 			} else if (item->type == QITEM_QUIT) {
 				if (ksiFile)
 					fclose(ksiFile);
 				free(item);
-				debug_report(ctx, "debug: sig-thread quitting");
 				goto cleanup;
 			}
 			free(item);

@@ -25,6 +25,7 @@
 #include "lib_ksi_queue.h"
 
 #define MAX_ROOTS 64
+#define MAX_ENDPOINTS 32
 
 /* Flags and record types for TLV handling */
 #define RSGT_FLAG_NONCRIT 0x20
@@ -83,6 +84,8 @@ struct rsksictx_s {
 	char* aggregatorUri;
 	char* aggregatorId;
 	char* aggregatorKey;
+	char* aggregatorEndpoints[MAX_ENDPOINTS];
+	int aggregatorEndpointCount;
 	char* random_source;
 	pthread_mutex_t module_lock;
 	pthread_t signer_thread;
@@ -90,7 +93,9 @@ struct rsksictx_s {
 	bool thread_started;
 	uint8_t disabled; /* permits to disable the plugin --> set to 1 */
 	ksifile ksi;
-	bool debug;
+	char *debugFileName;
+	int debugLevel;
+	FILE *debugFile;
 	uint64_t max_requests;
 	void (*errFunc)(void *, unsigned char*);
 	void (*logFunc)(void *, unsigned char*);
@@ -183,8 +188,10 @@ struct rsksistatefile {
 #define rsksiSetDirGID(ctx, val) ((ctx)->dirGID = val)
 #define rsksiSetCreateMode(ctx, val) ((ctx)->fCreateMode= val)
 #define rsksiSetDirCreateMode(ctx, val) ((ctx)->fDirCreateMode = val)
-#define rsksiSetDebug(ctx, val) ((ctx)->debug = val)
+#define rsksiSetDebugLevel(ctx, val) ((ctx)->debugLevel = val)
 
+
+int rsksiSetDebugFile(rsksictx ctx, char *val);
 int rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key);
 int rsksiSetHashFunction(rsksictx ctx, char *algName);
 int rsksiSetHmacFunction(rsksictx ctx, char *algName);
