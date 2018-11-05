@@ -1482,8 +1482,11 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
 			"KSI_AsyncHandle_getRequestCtx");
 
-		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED &&
-			KSI_AsyncHandle_getConfig(respHandle, &config) == KSI_OK) {
+		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
+			if((res = KSI_AsyncHandle_getConfig(respHandle, &config)) != KSI_OK) {
+				reportKSIAPIErr(ctx, NULL, "KSI_AsyncHandle_getConfig", res);
+				continue;
+			}
 
 			if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
 				tmpInt = KSI_Integer_getUInt64(ksi_int);
@@ -1510,6 +1513,8 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 					ctx->disabled = true;
 				}
 			}
+			KSI_AsyncHandle_free(item->respHandle);
+			continue;
 		}
 
 		if(item == NULL) { /* must never happen */
