@@ -55,6 +55,7 @@
 #include <ksi/tlv_element.h>
 #include <ksi/hash.h>
 #include <ksi/net_async.h>
+#include <ksi/net_ha.h>
 #include <ksi/net_uri.h>
 #include <ksi/signature_builder.h>
 #include "rsyslog.h"
@@ -1272,22 +1273,31 @@ done:
 int
 rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 	int r;
+	char *strTmp, *strTmpUri;
 
 	if (!uri || !loginid || !key) {
 		ctx->disabled = true;
 		return KSI_INVALID_ARGUMENT;
 	}
 
-	r = KSI_CTX_setAggregator(ctx->ksi_ctx, uri, loginid, key);
+	ctx->aggregatorUri = strdup(uri);
+	ctx->aggregatorId = strdup(loginid);
+	ctx->aggregatorKey = strdup(key);
+
+	/* split the URI string up for possible HA endpoints */
+	strTmp = ctx->aggregatorUri;
+	while((strTmpUri = strsep(&strTmp, "|") ) != NULL
+		&& ctx->aggregatorEndpointCount < MAX_ENDPOINTS) {
+		ctx->aggregatorEndpoints[ctx->aggregatorEndpointCount] = strTmpUri;
+		ctx->aggregatorEndpointCount++;
+	}
+
+	r = KSI_CTX_setAggregator(ctx->ksi_ctx, ctx->aggregatorUri, loginid, key);
 	if(r != KSI_OK) {
 		ctx->disabled = true;
 		reportKSIAPIErr(ctx, NULL, "KSI_CTX_setAggregator", r);
 		return KSI_INVALID_ARGUMENT;
 	}
-
-	ctx->aggregatorUri = strdup(uri);
-	ctx->aggregatorId = strdup(loginid);
-	ctx->aggregatorKey = strdup(key);
 
 	return r;
 }
@@ -1445,7 +1455,10 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 	KSI_AsyncHandle *reqHandle = NULL;
 	KSI_AsyncHandle *respHandle = NULL;
 	KSI_AggregationReq *req = NULL;
+	KSI_Config *config = NULL;
 	KSI_Integer *level;
+	KSI_Integer *ksi_int;
+	uint64_t tmpInt;
 	int state;
 	unsigned i;
 	size_t p;
@@ -1468,6 +1481,36 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		CHECK_KSI_API(KSI_AsyncHandle_getState(respHandle, &state), ctx, "KSI_AsyncHandle_getState");
 		CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
 			"KSI_AsyncHandle_getRequestCtx");
+
+		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED &&
+			KSI_AsyncHandle_getConfig(respHandle, &config) == KSI_OK) {
+
+			if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+				tmpInt = KSI_Integer_getUInt64(ksi_int);
+				ctx->max_requests=tmpInt;
+				report(ctx, "KSI gateway has reported a max requests value of %llu",
+					(long long unsigned) tmpInt);
+			}
+
+			ksi_int = NULL;
+			if(KSI_Config_getMaxLevel(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+				tmpInt = KSI_Integer_getUInt64(ksi_int);
+				report(ctx, "KSI gateway has reported a max level value of %llu",
+					(long long unsigned) tmpInt);
+				if(ctx->blockLevelLimit > tmpInt) {
+					report(ctx, "Decreasing the configured block level limit from %llu to %llu "
+					"reported by KSI gateway",
+					(long long unsigned) ctx->blockLevelLimit,
+					(long long unsigned) tmpInt);
+					ctx->blockLevelLimit=tmpInt;
+				}
+				else if(tmpInt < 2) {
+					report(ctx, "KSI gateway has reported an invalid level limit value (%llu), "
+						"plugin disabled", (long long unsigned) tmpInt);
+					ctx->disabled = true;
+				}
+			}
+		}
 
 		if(item == NULL) { /* must never happen */
 			reportErr(ctx, "KSI_AsyncHandle_getRequestCtx returned NULL as context");
@@ -1570,6 +1613,33 @@ cleanup:
 	return ret;
 }
 
+static void
+configure_async_service(rsksictx ctx, KSI_AsyncService *as) {
+	KSI_Config *cfg = NULL;
+	KSI_AsyncHandle *cfgHandle = NULL;
+	KSI_AggregationReq *cfgReq = NULL;
+	int res;
+	bool bSuccess = false;
+
+	CHECK_KSI_API(KSI_AggregationReq_new(ctx->ksi_ctx, &cfgReq), ctx, "KSI_AggregationReq_new");
+	CHECK_KSI_API(KSI_Config_new(ctx->ksi_ctx, &cfg), ctx, "KSI_Config_new");
+	CHECK_KSI_API(KSI_AggregationReq_setConfig(cfgReq, cfg), ctx, "KSI_AggregationReq_setConfig");
+	CHECK_KSI_API(KSI_AsyncAggregationHandle_new(ctx->ksi_ctx, cfgReq, &cfgHandle), ctx, "KSI_AsyncAggregationHandle_new");
+	CHECK_KSI_API(KSI_AsyncService_addRequest(as, cfgHandle), ctx, "KSI_AsyncService_addRequest");
+
+	bSuccess = true;
+
+cleanup:
+	if(!bSuccess) {
+		if(cfgHandle)
+			KSI_AsyncHandle_free(cfgHandle);
+		else if(cfgReq)
+			KSI_AggregationReq_free(cfgReq);
+		else if(cfg)
+			KSI_Config_free(cfg);
+	}
+}
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
 void *signer_thread(void *arg) {
@@ -1582,7 +1652,7 @@ void *signer_thread(void *arg) {
 	KSI_AsyncService *as = NULL;
 	int res = 0;
 	bool ret = false;
-
+	int i = 0, endpoints = 0;
 	ctx->thread_started = true;
 
 	CHECK_KSI_API(KSI_CTX_new(&ksi_ctx), ctx, "KSI_CTX_new");
@@ -1601,26 +1671,28 @@ void *signer_thread(void *arg) {
 	CHECK_KSI_API(KSI_CTX_setOption(ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg)),
 		ctx, "KSI_CTX_setOption");
 
-	res = KSI_SigningAsyncService_new(ksi_ctx, &as);
+	res = KSI_SigningHighAvailabilityService_new(ksi_ctx, &as);
 	if (res != KSI_OK) {
 		reportKSIAPIErr(ctx, NULL, "KSI_SigningAsyncService_new", res);
 	}
 	else {
-		res = KSI_AsyncService_setEndpoint(as, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey);
-		if (res != KSI_OK) {
+		for (i = 0; i < ctx->aggregatorEndpointCount; i++) {
+			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
+			if (res != KSI_OK) {
 				//This can fail if the protocol is not supported by async api.
 				//in this case the plugin will fall back to sync api
-				KSI_AsyncService_free(as);
-			as=NULL;
-		} else {
-			res = KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_MAX_REQUEST_COUNT,
-				(void*) (ctx->max_requests));
-			if (res != KSI_OK)
-				reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_setOption(max_request)", res);
+				continue;
+			}
 
-			/* ingoring the possible error here */
-			KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
-				(void*) (ctx->max_requests * 5));
+			endpoints++;
+		}
+
+		if(endpoints > 0) {
+			configure_async_service(ctx, as);
+		}
+		else { /* no endpoint accepted, deleting the service */
+			KSI_AsyncService_free(as);
+			as=NULL;
 		}
 	}
 

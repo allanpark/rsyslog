@@ -25,6 +25,7 @@
 #include "lib_ksi_queue.h"
 
 #define MAX_ROOTS 64
+#define MAX_ENDPOINTS 32
 
 /* Flags and record types for TLV handling */
 #define RSGT_FLAG_NONCRIT 0x20
@@ -83,6 +84,8 @@ struct rsksictx_s {
 	char* aggregatorUri;
 	char* aggregatorId;
 	char* aggregatorKey;
+	char* aggregatorEndpoints[MAX_ENDPOINTS];
+	int aggregatorEndpointCount;
 	char* random_source;
 	pthread_mutex_t module_lock;
 	pthread_t signer_thread;
