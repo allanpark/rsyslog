@@ -1287,7 +1287,7 @@ rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 	/* split the URI string up for possible HA endpoints */
 	strTmp = ctx->aggregatorUri;
 	while((strTmpUri = strsep(&strTmp, "|") ) != NULL
-		&& ctx->aggregatorEndpointCount < MAX_ENDPOINTS) {
+		&& ctx->aggregatorEndpointCount < KSI_OPT_HA_SAFEGUARD) {
 		ctx->aggregatorEndpoints[ctx->aggregatorEndpointCount] = strTmpUri;
 		ctx->aggregatorEndpointCount++;
 	}
@@ -1337,6 +1337,7 @@ bool add_queue_item(rsksictx ctx, QITEM_type type, void *arg, uint64_t intarg1, 
 
 //This version of signing thread discards all the requests except last one (no aggregation/pipelining used)
 
+#if 0
 static void process_requests(rsksictx ctx, KSI_CTX *ksi_ctx, FILE* outfile) {
 	QueueItem *item = NULL;
 	QueueItem *lastItem = NULL;
@@ -1418,6 +1419,7 @@ signing_failed:
 	if (der != NULL)
 		KSI_free(der);
 }
+#endif
 
 static bool save_response(rsksictx ctx, FILE* outfile, QueueItem *item) {
 	bool ret = false;
@@ -1482,6 +1484,7 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
 			"KSI_AsyncHandle_getRequestCtx");
 
+		/* handle the configuration received from the service */
 		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
 			if((res = KSI_AsyncHandle_getConfig(respHandle, &config)) != KSI_OK) {
 				reportKSIAPIErr(ctx, NULL, "KSI_AsyncHandle_getConfig", res);
@@ -1493,6 +1496,15 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 				ctx->max_requests=tmpInt;
 				report(ctx, "KSI gateway has reported a max requests value of %llu",
 					(long long unsigned) tmpInt);
+
+				res = KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_MAX_REQUEST_COUNT,
+					(void*) (ctx->max_requests));
+				if (res != KSI_OK)
+					reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_setOption(max_request)", res);
+
+				/* ingoring the possible error here */
+				KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
+					(void*) (ctx->max_requests * 5));
 			}
 
 			ksi_int = NULL;
@@ -1619,7 +1631,7 @@ cleanup:
 }
 
 static void
-configure_async_service(rsksictx ctx, KSI_AsyncService *as) {
+request_async_config(rsksictx ctx, KSI_AsyncService *as) {
 	KSI_Config *cfg = NULL;
 	KSI_AsyncHandle *cfgHandle = NULL;
 	KSI_AggregationReq *cfgReq = NULL;
@@ -1671,8 +1683,8 @@ void *signer_thread(void *arg) {
 			reportKSIAPIErr(ctx, NULL, "Unable to set log level", res);
 	}
 
-	CHECK_KSI_API(KSI_CTX_setAggregator(ksi_ctx, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey),
-		ctx, "KSI_CTX_setAggregator");
+	/*CHECK_KSI_API(KSI_CTX_setAggregator(ksi_ctx, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey),
+		ctx, "KSI_CTX_setAggregator");*/
 	CHECK_KSI_API(KSI_CTX_setOption(ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg)),
 		ctx, "KSI_CTX_setOption");
 
@@ -1685,21 +1697,24 @@ void *signer_thread(void *arg) {
 			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
 			if (res != KSI_OK) {
 				//This can fail if the protocol is not supported by async api.
-				//in this case the plugin will fall back to sync api
+				reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_addEndpoint", res);
 				continue;
 			}
 
 			endpoints++;
 		}
-
-		if(endpoints > 0) {
-			configure_async_service(ctx, as);
-		}
-		else { /* no endpoint accepted, deleting the service */
-			KSI_AsyncService_free(as);
-			as=NULL;
-		}
 	}
+
+	if(endpoints == 0) { /* no endpoint accepted, deleting the service */
+		report(ctx, "No endpoints added, signing service disabled");
+		ctx->disabled = true;
+		KSI_AsyncService_free(as);
+		as=NULL;
+		goto cleanup;
+	}
+
+	/* request configuration from the service */
+	request_async_config(ctx, as);
 
 	while (true) {
 		timeout = 1;
@@ -1715,7 +1730,7 @@ void *signer_thread(void *arg) {
 
 		/* process signing requests only if there is an open signature file */
 		if(ksiFile != NULL) {
-			if(as != NULL) {
+			//if(as != NULL) {
 				/* in case of asynchronous service check for pending/unsent requests */
 				ret = process_requests_async(ctx, ksi_ctx, as, ksiFile);
 				if(!ret) {
@@ -1723,6 +1738,7 @@ void *signer_thread(void *arg) {
 					ctx->disabled = true;
 					goto cleanup;
 				}
+#if 0
 			}
 			else {
 				/* drain all consecutive signature requests from the queue and add
@@ -1732,8 +1748,8 @@ void *signer_thread(void *arg) {
 					process_requests(ctx, ksi_ctx, ksiFile);
 				}
 			}
+#endif
 		}
-
 		/* if there are sig. requests still in the front, then we have to start over*/
 		if (ProtectedQueue_peekFront(ctx->signer_queue, (void**) &item)
 			&& item->type == QITEM_SIGNATURE_REQUEST)
@@ -1748,6 +1764,9 @@ void *signer_thread(void *arg) {
 				}
 			} else if (item->type == QITEM_NEW_FILE) {
 				ksiFile = (FILE*) item->arg;
+				/* renew the config when opening a new file */
+				if(as)
+					request_async_config(ctx, as);
 			} else if (item->type == QITEM_QUIT) {
 				if (ksiFile)
 					fclose(ksiFile);
