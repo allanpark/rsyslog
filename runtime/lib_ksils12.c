@@ -1286,10 +1286,15 @@ rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 
 	/* split the URI string up for possible HA endpoints */
 	strTmp = ctx->aggregatorUri;
-	while((strTmpUri = strsep(&strTmp, "|") ) != NULL
-		&& ctx->aggregatorEndpointCount < KSI_OPT_HA_SAFEGUARD) {
-		ctx->aggregatorEndpoints[ctx->aggregatorEndpointCount] = strTmpUri;
-		ctx->aggregatorEndpointCount++;
+	while((strTmpUri = strsep(&strTmp, "|") ) != NULL) {
+		if(ctx->aggregatorEndpointCount >= KSI_CTX_HA_MAX_SUBSERVICES) {
+			report(ctx, "Maximum number (%d) of service endoints reached, ignoring endpoint: %s",
+				KSI_CTX_HA_MAX_SUBSERVICES, strTmpUri);
+		}
+		else {
+			ctx->aggregatorEndpoints[ctx->aggregatorEndpointCount] = strTmpUri;
+			ctx->aggregatorEndpointCount++;
+		}
 	}
 
 	r = KSI_CTX_setAggregator(ctx->ksi_ctx, ctx->aggregatorUri, loginid, key);
@@ -1450,7 +1455,58 @@ cleanup:
 	return ret;
 }
 
-static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FILE* outfile) {
+static bool
+handle_ksi_config(rsksictx ctx, KSI_AsyncHandle *respHandle, KSI_AsyncService *as) {
+	KSI_Config *config = NULL;
+	KSI_Integer *level;
+	KSI_Integer *ksi_int;
+	uint64_t tmpInt;
+	int res;
+
+	if((res = KSI_AsyncHandle_getConfig(respHandle, &config)) != KSI_OK) {
+		reportKSIAPIErr(ctx, NULL, "KSI_AsyncHandle_getConfig", res);
+		return false;
+	}
+
+	if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+		tmpInt = KSI_Integer_getUInt64(ksi_int);
+		ctx->max_requests=tmpInt;
+		report(ctx, "KSI gateway has reported a max requests value of %llu",
+			(long long unsigned) tmpInt);
+
+		res = KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_MAX_REQUEST_COUNT,
+			(void*) (ctx->max_requests));
+		if (res != KSI_OK)
+			reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_setOption(max_request)", res);
+
+		/* ingoring the possible error here */
+		KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
+			(void*) (ctx->max_requests * 5));
+	}
+
+	ksi_int = NULL;
+	if(KSI_Config_getMaxLevel(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+		tmpInt = KSI_Integer_getUInt64(ksi_int);
+		report(ctx, "KSI gateway has reported a max level value of %llu",
+			(long long unsigned) tmpInt);
+		if(ctx->blockLevelLimit > tmpInt) {
+			report(ctx, "Decreasing the configured block level limit from %llu to %llu "
+			"reported by KSI gateway",
+			(long long unsigned) ctx->blockLevelLimit,
+			(long long unsigned) tmpInt);
+			ctx->blockLevelLimit=tmpInt;
+		}
+		else if(tmpInt < 2) {
+			report(ctx, "KSI gateway has reported an invalid level limit value (%llu), "
+				"plugin disabled", (long long unsigned) tmpInt);
+			ctx->disabled = true;
+		}
+	}
+	return true;
+}
+
+static bool
+process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FILE* outfile) {
 	bool ret = false;
 	QueueItem *item = NULL;
 	int res = KSI_OK, tmpRes;
@@ -1461,6 +1517,8 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 	KSI_Integer *level;
 	KSI_Integer *ksi_int;
 	uint64_t tmpInt;
+	long extError;
+	char *errorMsg;
 	int state;
 	unsigned i;
 	size_t p;
@@ -1484,62 +1542,21 @@ static bool process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncServ
 		CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
 			"KSI_AsyncHandle_getRequestCtx");
 
-		/* handle the configuration received from the service */
 		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
-			if((res = KSI_AsyncHandle_getConfig(respHandle, &config)) != KSI_OK) {
-				reportKSIAPIErr(ctx, NULL, "KSI_AsyncHandle_getConfig", res);
-				continue;
-			}
-
-			if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
-				tmpInt = KSI_Integer_getUInt64(ksi_int);
-				ctx->max_requests=tmpInt;
-				report(ctx, "KSI gateway has reported a max requests value of %llu",
-					(long long unsigned) tmpInt);
-
-				res = KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_MAX_REQUEST_COUNT,
-					(void*) (ctx->max_requests));
-				if (res != KSI_OK)
-					reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_setOption(max_request)", res);
-
-				/* ingoring the possible error here */
-				KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
-					(void*) (ctx->max_requests * 5));
-			}
-
-			ksi_int = NULL;
-			if(KSI_Config_getMaxLevel(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
-				tmpInt = KSI_Integer_getUInt64(ksi_int);
-				report(ctx, "KSI gateway has reported a max level value of %llu",
-					(long long unsigned) tmpInt);
-				if(ctx->blockLevelLimit > tmpInt) {
-					report(ctx, "Decreasing the configured block level limit from %llu to %llu "
-					"reported by KSI gateway",
-					(long long unsigned) ctx->blockLevelLimit,
-					(long long unsigned) tmpInt);
-					ctx->blockLevelLimit=tmpInt;
-				}
-				else if(tmpInt < 2) {
-					report(ctx, "KSI gateway has reported an invalid level limit value (%llu), "
-						"plugin disabled", (long long unsigned) tmpInt);
-					ctx->disabled = true;
-				}
-			}
+			handle_ksi_config(ctx, respHandle, as);
 			KSI_AsyncHandle_free(item->respHandle);
-			continue;
 		}
-
-		if(item == NULL) { /* must never happen */
-			reportErr(ctx, "KSI_AsyncHandle_getRequestCtx returned NULL as context");
-			continue;
-		}
-
-		if(state == KSI_ASYNC_STATE_RESPONSE_RECEIVED) {
+		else if(state == KSI_ASYNC_STATE_RESPONSE_RECEIVED) {
 			item->respHandle = respHandle;
 			item->ksi_status = KSI_OK;
 		}
-		else {
+		else if(state == KSI_ASYNC_STATE_ERROR) {
+			errorMsg = NULL;
 			KSI_AsyncHandle_getError(respHandle, &item->ksi_status);
+			KSI_AsyncHandle_getExtError(respHandle, &extError);
+			KSI_AsyncHandle_getErrorMessage(respHandle, &errorMsg);
+			report(ctx, "Asynchronous request returned error %s (%d), %lu %s",
+				KSI_getErrorString(item->ksi_status), item->ksi_status, extError, errorMsg ? errorMsg : "");
 			KSI_AsyncHandle_free(respHandle);
 		}
 

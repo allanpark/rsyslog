@@ -83,7 +83,7 @@ struct rsksictx_s {
 	char* aggregatorUri;
 	char* aggregatorId;
 	char* aggregatorKey;
-	char* aggregatorEndpoints[KSI_OPT_HA_SAFEGUARD];
+	char* aggregatorEndpoints[KSI_CTX_HA_MAX_SUBSERVICES];
 	int aggregatorEndpointCount;
 	char* random_source;
 	pthread_mutex_t module_lock;
