@@ -1458,7 +1458,6 @@ cleanup:
 static bool
 handle_ksi_config(rsksictx ctx, KSI_AsyncHandle *respHandle, KSI_AsyncService *as) {
 	KSI_Config *config = NULL;
-	KSI_Integer *level;
 	KSI_Integer *ksi_int;
 	uint64_t tmpInt;
 	int res;
@@ -1513,12 +1512,9 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 	KSI_AsyncHandle *reqHandle = NULL;
 	KSI_AsyncHandle *respHandle = NULL;
 	KSI_AggregationReq *req = NULL;
-	KSI_Config *config = NULL;
 	KSI_Integer *level;
-	KSI_Integer *ksi_int;
-	uint64_t tmpInt;
 	long extError;
-	char *errorMsg;
+	KSI_Utf8String *errorMsg;
 	int state;
 	unsigned i;
 	size_t p;
@@ -1556,8 +1552,9 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 			KSI_AsyncHandle_getExtError(respHandle, &extError);
 			KSI_AsyncHandle_getErrorMessage(respHandle, &errorMsg);
 			report(ctx, "Asynchronous request returned error %s (%d), %lu %s",
-				KSI_getErrorString(item->ksi_status), item->ksi_status, extError, errorMsg ? errorMsg : "");
+				KSI_getErrorString(item->ksi_status), item->ksi_status, extError, errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
 			KSI_AsyncHandle_free(respHandle);
+			KSI_Utf8String_free(errorMsg);
 		}
 
 		item->status = QITEM_DONE;
