@@ -959,7 +959,7 @@ sigblkInitKSI(ksifile ksi)
 	ksi->nRecords = 0;
 	ksi->bInBlk = 1;
 	ksi->blockStarted = time(NULL); //TODO: maybe milli/nanoseconds should be used
-	ksi->blockSizeLimit = 1 << (ctx->blockLevelLimit - 1);
+	ksi->blockSizeLimit = 1 << (ksi->ctx->blockLevelLimit - 1);
 
 	/* flush the optional debug file when starting a new block */
 	if(ksi->ctx->debugFile != NULL)
@@ -1734,7 +1734,7 @@ void *signer_thread(void *arg) {
 	}
 
 	KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
-		(void*) (ctx->max_requests != 0 ctx->max_requests * 5, 5));
+		(void*) (ctx->max_requests));
 
 	/* request configuration from the service */
 	request_async_config(ctx, as);
