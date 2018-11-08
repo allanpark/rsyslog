@@ -1542,7 +1542,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 
 		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
 			handle_ksi_config(ctx, respHandle, as);
-			KSI_AsyncHandle_free(item->respHandle);
+			KSI_AsyncHandle_free(respHandle);
 		}
 		else if(state == KSI_ASYNC_STATE_RESPONSE_RECEIVED) {
 			item->respHandle = respHandle;
@@ -1559,7 +1559,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 			KSI_Utf8String_free(errorMsg);
 
 			if(item)
-				item->ksi_status = item->ksi_status;
+				item->ksi_status = ksi_status;
 		}
 
 		if(item)
