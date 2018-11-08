@@ -959,6 +959,7 @@ sigblkInitKSI(ksifile ksi)
 	ksi->nRecords = 0;
 	ksi->bInBlk = 1;
 	ksi->blockStarted = time(NULL); //TODO: maybe milli/nanoseconds should be used
+	ksi->blockSizeLimit = 1 << (ctx->blockLevelLimit - 1);
 
 	/* flush the optional debug file when starting a new block */
 	if(ksi->ctx->debugFile != NULL)
@@ -1515,7 +1516,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 	KSI_Integer *level;
 	long extError;
 	KSI_Utf8String *errorMsg;
-	int state;
+	int state, ksi_status;
 	unsigned i;
 	size_t p;
 
@@ -1524,6 +1525,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 	/* Check if there are pending/available responses and associate them with the request items */
 	while(true) {
 		respHandle = NULL;
+		item = NULL;
 		tmpRes=KSI_AsyncService_run(as, &respHandle, &p);
 		if(tmpRes!=KSI_OK)
 			reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_run", tmpRes);
@@ -1548,16 +1550,20 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 		}
 		else if(state == KSI_ASYNC_STATE_ERROR) {
 			errorMsg = NULL;
-			KSI_AsyncHandle_getError(respHandle, &item->ksi_status);
+			KSI_AsyncHandle_getError(respHandle, &ksi_status);
 			KSI_AsyncHandle_getExtError(respHandle, &extError);
 			KSI_AsyncHandle_getErrorMessage(respHandle, &errorMsg);
 			report(ctx, "Asynchronous request returned error %s (%d), %lu %s",
-				KSI_getErrorString(item->ksi_status), item->ksi_status, extError, errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
+				KSI_getErrorString(ksi_status), ksi_status, extError, errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
 			KSI_AsyncHandle_free(respHandle);
 			KSI_Utf8String_free(errorMsg);
+
+			if(item)
+				item->ksi_status = item->ksi_status;
 		}
 
-		item->status = QITEM_DONE;
+		if(item)
+			item->status = QITEM_DONE;
 	}
 
 	KSI_AsyncService_getPendingCount(as, &p);
@@ -1567,7 +1573,6 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 		item = NULL;
 		if(!ProtectedQueue_getItem(ctx->signer_queue, i, (void**)&item) || !item)
 			continue;
-
 		/* ingore non request queue items */
 		if(item->type != QITEM_SIGNATURE_REQUEST)
 			continue;
@@ -1598,6 +1603,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 				reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_run", tmpRes);
 
 		} else {
+			reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_addRequest", res);
 			KSI_AsyncHandle_free(reqHandle);
 			item->status = QITEM_DONE;
 			item->ksi_status = res;
@@ -1726,6 +1732,9 @@ void *signer_thread(void *arg) {
 		as=NULL;
 		goto cleanup;
 	}
+
+	KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
+		(void*) (ctx->max_requests != 0 ctx->max_requests * 5, 5));
 
 	/* request configuration from the service */
 	request_async_config(ctx, as);
