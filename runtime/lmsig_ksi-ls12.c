@@ -228,6 +228,7 @@ finalize_it:
 	free(ag_loginid);
 	free(ag_key);
 	free(hash);
+	free(hmac);
 
 	if(pvals != NULL)
 		cnfparamvalsDestruct(pvals, &pblk);
