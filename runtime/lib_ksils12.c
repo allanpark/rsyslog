@@ -1556,7 +1556,6 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 			report(ctx, "Asynchronous request returned error %s (%d), %lu %s",
 				KSI_getErrorString(ksi_status), ksi_status, extError, errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
 			KSI_AsyncHandle_free(respHandle);
-			KSI_Utf8String_free(errorMsg);
 
 			if(item)
 				item->ksi_status = ksi_status;
