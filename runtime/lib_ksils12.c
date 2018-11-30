@@ -1341,92 +1341,6 @@ bool add_queue_item(rsksictx ctx, QITEM_type type, void *arg, uint64_t intarg1, 
 	return true;
 }
 
-//This version of signing thread discards all the requests except last one (no aggregation/pipelining used)
-
-#if 0
-static void process_requests(rsksictx ctx, KSI_CTX *ksi_ctx, FILE* outfile) {
-	QueueItem *item = NULL;
-	QueueItem *lastItem = NULL;
-	unsigned char *der = NULL;
-	size_t lenDer = 0;
-	int r = KSI_OK;
-	KSI_Signature *sig = NULL;
-
-	if(ProtectedQueue_count(ctx->signer_queue) == 0)
-		return;
-
-	while (ProtectedQueue_peekFront(ctx->signer_queue, (void**) &item) && item->type == QITEM_SIGNATURE_REQUEST) {
-		if (lastItem != NULL) {
-			if (outfile)
-				tlvWriteNoSigLS12(outfile, lastItem->intarg1, lastItem->arg,
-						"Signature request dropped for block, signer queue full");
-			report(ctx, "Signature request dropped for block, signer queue full");
-
-			/* the main thread has to be locked when the hash is freed to avoid a race condition */
-			/* TODO: this need more elegant solution, hash should be detached from creation context*/
-			pthread_mutex_lock(&ctx->module_lock);
-			KSI_DataHash_free(lastItem->arg);
-			pthread_mutex_unlock(&ctx->module_lock);
-			free(lastItem);
-		}
-
-		ProtectedQueue_popFront(ctx->signer_queue, (void**) &item);
-		lastItem = item;
-	}
-
-	if (!outfile)
-		goto signing_failed;
-
-	if(!lastItem || lastItem->type != QITEM_SIGNATURE_REQUEST)
-		return;
-
-	if(lastItem->arg == NULL) {
-		r = KSI_INVALID_ARGUMENT;
-		goto signing_failed;
-	}
-
-	r = KSI_Signature_signAggregated(ksi_ctx, lastItem->arg, lastItem->intarg2, &sig);
-	if (r != KSI_OK) {
-		reportKSIAPIErr(ctx, NULL, "KSI_Signature_createAggregated", r);
-		goto signing_failed;
-	}
-
-	/* Serialize Signature. */
-	r = KSI_Signature_serialize(sig, &der, &lenDer);
-	if (r != KSI_OK) {
-		reportKSIAPIErr(ctx, NULL, "KSI_Signature_serialize", r);
-		lenDer = 0;
-		goto signing_failed;
-	}
-
-signing_failed:
-
-	if (outfile) {
-		if (r == KSI_OK)
-			r = tlvWriteKSISigLS12(outfile, lastItem->intarg1, der, lenDer);
-		else
-			r = tlvWriteNoSigLS12(outfile, lastItem->intarg1, lastItem->arg, KSI_getErrorString(r));
-	}
-
-	if (r != KSI_OK)
-		reportKSIAPIErr(ctx, NULL, "tlvWriteKSISigLS12", r);
-
-	if (lastItem != NULL) {
-		/* the main thread has to be locked when the hash is freed to avoid a race condition */
-		/* TODO: this need more elegant solution, hash should be detached from creation context*/
-		pthread_mutex_lock(&ctx->module_lock);
-		KSI_DataHash_free(lastItem->arg);
-		pthread_mutex_unlock(&ctx->module_lock);
-		free(lastItem);
-	}
-
-	if (sig != NULL)
-		KSI_Signature_free(sig);
-	if (der != NULL)
-		KSI_free(der);
-}
-#endif
-
 static bool save_response(rsksictx ctx, FILE* outfile, QueueItem *item) {
 	bool ret = false;
 	KSI_Signature *sig = NULL;
@@ -1704,8 +1618,6 @@ void *signer_thread(void *arg) {
 			reportKSIAPIErr(ctx, NULL, "Unable to set log level", res);
 	}
 
-	/*CHECK_KSI_API(KSI_CTX_setAggregator(ksi_ctx, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey),
-		ctx, "KSI_CTX_setAggregator");*/
 	CHECK_KSI_API(KSI_CTX_setOption(ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg)),
 		ctx, "KSI_CTX_setOption");
 
@@ -1754,25 +1666,13 @@ void *signer_thread(void *arg) {
 
 		/* process signing requests only if there is an open signature file */
 		if(ksiFile != NULL) {
-			//if(as != NULL) {
-				/* in case of asynchronous service check for pending/unsent requests */
-				ret = process_requests_async(ctx, ksi_ctx, as, ksiFile);
-				if(!ret) {
-					// probably fatal error, disable signing, error should be already reported
-					ctx->disabled = true;
-					goto cleanup;
-				}
-#if 0
+			/* check for pending/unsent requests in asynchronous service */
+			ret = process_requests_async(ctx, ksi_ctx, as, ksiFile);
+			if(!ret) {
+				// probably fatal error, disable signing, error should be already reported
+				ctx->disabled = true;
+				goto cleanup;
 			}
-			else {
-				/* drain all consecutive signature requests from the queue and add
-				 * the last one to aggregation request */
-				if (ProtectedQueue_peekFront(ctx->signer_queue, (void**) &item)
-					&& item->type == QITEM_SIGNATURE_REQUEST) {
-					process_requests(ctx, ksi_ctx, ksiFile);
-				}
-			}
-#endif
 		}
 		/* if there are sig. requests still in the front, then we have to start over*/
 		if (ProtectedQueue_peekFront(ctx->signer_queue, (void**) &item)
