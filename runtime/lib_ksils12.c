@@ -1537,18 +1537,20 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 		state = KSI_ASYNC_STATE_UNDEFINED;
 
 		CHECK_KSI_API(KSI_AsyncHandle_getState(respHandle, &state), ctx, "KSI_AsyncHandle_getState");
-		CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
-			"KSI_AsyncHandle_getRequestCtx");
 
 		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
 			handle_ksi_config(ctx, respHandle, as);
 			KSI_AsyncHandle_free(respHandle);
 		}
 		else if(state == KSI_ASYNC_STATE_RESPONSE_RECEIVED) {
+			CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
+				"KSI_AsyncHandle_getRequestCtx");
 			item->respHandle = respHandle;
 			item->ksi_status = KSI_OK;
 		}
 		else if(state == KSI_ASYNC_STATE_ERROR) {
+			CHECK_KSI_API(KSI_AsyncHandle_getRequestCtx(respHandle, (const void**)&item), ctx,
+				"KSI_AsyncHandle_getRequestCtx");
 			errorMsg = NULL;
 			KSI_AsyncHandle_getError(respHandle, &ksi_status);
 			KSI_AsyncHandle_getExtError(respHandle, &extError);
