@@ -754,6 +754,9 @@ rsksiInitModule(rsksictx ctx) {
 
 	KSI_CTX_setOption(ctx->ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg));
 
+	if (ctx->syncMode != LOGSIG_SYNCHRONOUS) /* in async mode receives the config itself */
+		goto skip_config;
+
 	res = KSI_receiveAggregatorConfig(ctx->ksi_ctx, &config);
 	if(res == KSI_OK) {
 		if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
@@ -788,6 +791,7 @@ rsksiInitModule(rsksictx ctx) {
 		reportKSIAPIErr(ctx, NULL, "KSI_receiveAggregatorConfig", res);
 	}
 
+skip_config:
 	create_signer_thread(ctx);
 
 done:
