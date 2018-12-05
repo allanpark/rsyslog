@@ -1566,17 +1566,17 @@ cleanup:
 }
 
 static void
-request_async_config(rsksictx ctx, KSI_AsyncService *as) {
+request_async_config(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as) {
 	KSI_Config *cfg = NULL;
 	KSI_AsyncHandle *cfgHandle = NULL;
 	KSI_AggregationReq *cfgReq = NULL;
 	int res;
 	bool bSuccess = false;
 
-	CHECK_KSI_API(KSI_AggregationReq_new(ctx->ksi_ctx, &cfgReq), ctx, "KSI_AggregationReq_new");
-	CHECK_KSI_API(KSI_Config_new(ctx->ksi_ctx, &cfg), ctx, "KSI_Config_new");
+	CHECK_KSI_API(KSI_AggregationReq_new(ksi_ctx, &cfgReq), ctx, "KSI_AggregationReq_new");
+	CHECK_KSI_API(KSI_Config_new(ksi_ctx, &cfg), ctx, "KSI_Config_new");
 	CHECK_KSI_API(KSI_AggregationReq_setConfig(cfgReq, cfg), ctx, "KSI_AggregationReq_setConfig");
-	CHECK_KSI_API(KSI_AsyncAggregationHandle_new(ctx->ksi_ctx, cfgReq, &cfgHandle), ctx, "KSI_AsyncAggregationHandle_new");
+	CHECK_KSI_API(KSI_AsyncAggregationHandle_new(ksi_ctx, cfgReq, &cfgHandle), ctx, "KSI_AsyncAggregationHandle_new");
 	CHECK_KSI_API(KSI_AsyncService_addRequest(as, cfgHandle), ctx, "KSI_AsyncService_addRequest");
 
 	bSuccess = true;
@@ -1662,7 +1662,7 @@ void *signer_thread(void *arg) {
 
 		/* in case there are no items go around*/
 		if (ProtectedQueue_count(ctx->signer_queue) == 0) {
-			KSI_AsyncService_run(as, NULL, NULL); /* call the service to let it do housekeeping */
+			process_requests_async(ctx, ksi_ctx, as, ksiFile);
 			continue;
 		}
 
@@ -1690,7 +1690,7 @@ void *signer_thread(void *arg) {
 				}
 			} else if (item->type == QITEM_NEW_FILE) {
 				ksiFile = (FILE*) item->arg;
-				request_async_config(ctx, as); 				/* renew the config when opening a new file */
+				request_async_config(ctx, ksi_ctx, as); 				/* renew the config when opening a new file */
 			} else if (item->type == QITEM_QUIT) {
 				if (ksiFile)
 					fclose(ksiFile);
