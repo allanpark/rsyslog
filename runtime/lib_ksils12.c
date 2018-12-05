@@ -1280,14 +1280,10 @@ rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 	int r;
 	char *strTmp, *strTmpUri;
 
-	if (!uri || !loginid || !key) {
-		ctx->disabled = true;
-		return KSI_INVALID_ARGUMENT;
-	}
-
-	ctx->aggregatorUri = strdup(uri);
-	ctx->aggregatorId = strdup(loginid);
-	ctx->aggregatorKey = strdup(key);
+	/* only use the strings if they are not empty */
+	ctx->aggregatorUri = (uri != NULL && strlen(uri) != 0) ? strdup(uri) : NULL;
+	ctx->aggregatorId = (loginid != NULL && strlen(loginid) != 0) ? strdup(loginid) : NULL;
+	ctx->aggregatorKey = (key != NULL && strlen(key) != 0) ? strdup(key) : NULL;
 
 	/* split the URI string up for possible HA endpoints */
 	strTmp = ctx->aggregatorUri;
@@ -1302,7 +1298,7 @@ rsksiSetAggregator(rsksictx ctx, char *uri, char *loginid, char *key) {
 		}
 	}
 
-	r = KSI_CTX_setAggregator(ctx->ksi_ctx, ctx->aggregatorUri, loginid, key);
+	r = KSI_CTX_setAggregator(ctx->ksi_ctx, ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey);
 	if(r != KSI_OK) {
 		ctx->disabled = true;
 		reportKSIAPIErr(ctx, NULL, "KSI_CTX_setAggregator", r);
@@ -1612,6 +1608,9 @@ void *signer_thread(void *arg) {
 	ctx->thread_started = true;
 
 	CHECK_KSI_API(KSI_CTX_new(&ksi_ctx), ctx, "KSI_CTX_new");
+	CHECK_KSI_API(KSI_CTX_setAggregator(ksi_ctx,
+		ctx->aggregatorUri, ctx->aggregatorId, ctx->aggregatorKey),
+		ctx, "KSI_CTX_setAggregator");
 
 	if(ctx->debugFile) {
 		res = KSI_CTX_setLoggerCallback(ksi_ctx, rsksiStreamLogger, ctx->debugFile);
