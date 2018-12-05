@@ -1652,9 +1652,6 @@ void *signer_thread(void *arg) {
 	KSI_AsyncService_setOption(as, KSI_ASYNC_OPT_REQUEST_CACHE_SIZE,
 		(void*) (ctx->max_requests));
 
-	/* request configuration from the service */
-	request_async_config(ctx, as);
-
 	while (true) {
 		timeout = 1;
 
@@ -1691,9 +1688,7 @@ void *signer_thread(void *arg) {
 				}
 			} else if (item->type == QITEM_NEW_FILE) {
 				ksiFile = (FILE*) item->arg;
-				/* renew the config when opening a new file */
-				if(as)
-					request_async_config(ctx, as);
+				request_async_config(ctx, as); 				/* renew the config when opening a new file */
 			} else if (item->type == QITEM_QUIT) {
 				if (ksiFile)
 					fclose(ksiFile);
