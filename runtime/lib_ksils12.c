@@ -1661,8 +1661,10 @@ void *signer_thread(void *arg) {
 		sigblkCheckTimeOut(ctx);
 
 		/* in case there are no items go around*/
-		if (ProtectedQueue_count(ctx->signer_queue) == 0)
+		if (ProtectedQueue_count(ctx->signer_queue) == 0) {
+			KSI_AsyncService_run(as, NULL, NULL); /* call the service to let it do housekeeping */
 			continue;
+		}
 
 		/* process signing requests only if there is an open signature file */
 		if(ksiFile != NULL) {
