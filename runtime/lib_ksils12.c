@@ -584,14 +584,47 @@ done:
 	return f;
 }
 
+static void handle_ksi_config(rsksictx ctx, KSI_Config *config) {
+	KSI_Integer *ksi_int = NULL;
+	uint64_t tmpInt;
+
+	if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+		tmpInt = KSI_Integer_getUInt64(ksi_int);
+		ctx->max_requests=tmpInt;
+		report(ctx, "KSI gateway has reported a max requests value of %llu",
+			(long long unsigned) tmpInt);
+	}
+
+	ksi_int = NULL;
+	if(KSI_Config_getMaxLevel(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
+		tmpInt = KSI_Integer_getUInt64(ksi_int);
+		report(ctx, "KSI gateway has reported a max level value of %llu",
+			(long long unsigned) tmpInt);
+		if(ctx->blockLevelLimit > tmpInt) {
+			report(ctx, "Decreasing the configured block level limit from %llu to %llu "
+			"reported by KSI gateway",
+			(long long unsigned) ctx->blockLevelLimit,
+			(long long unsigned) tmpInt);
+			ctx->blockLevelLimit=tmpInt;
+		}
+		else if(tmpInt < 2) {
+			report(ctx, "KSI gateway has reported an invalid level limit value (%llu), "
+				"plugin disabled", (long long unsigned) tmpInt);
+			ctx->disabled = true;
+		}
+	}
+}
+
+
 /* note: if file exists, the last hash for chaining must
  * be read from file.
  */
 static int
 ksiOpenSigFile(ksifile ksi) {
-	int r = 0;
+	int r = 0, tmpRes = 0;
 	const char *header;
 	FILE* signatureFile = NULL;
+	KSI_Config *config = NULL;
 
 	if (ksi->ctx->syncMode == LOGSIG_ASYNCHRONOUS)
 		header = LS12_BLOCKFILE_HEADER;
@@ -624,6 +657,18 @@ ksiOpenSigFile(ksifile ksi) {
 	 * as a state file error can be recovered by graceful degredation.
 	 */
 	ksiReadStateFile(ksi);
+
+	if (ksi->ctx->syncMode == LOGSIG_SYNCHRONOUS) {
+		tmpRes = KSI_receiveAggregatorConfig(ksi->ctx->ksi_ctx, &config);
+		if(tmpRes == KSI_OK) {
+			handle_ksi_config(ksi->ctx, config);
+		}
+		else {
+			reportKSIAPIErr(ksi->ctx, NULL, "KSI_receiveAggregatorConfig", tmpRes);
+		}
+		KSI_Config_free(config);
+	}
+
 done:	return r;
 }
 
@@ -733,9 +778,6 @@ int rsksiStreamLogger(void *logCtx, int logLevel, const char *message)
 int
 rsksiInitModule(rsksictx ctx) {
 	int res = 0;
-	KSI_Config *config = NULL;
-	KSI_Integer *ksi_int = NULL;
-	uint64_t tmpInt;
 
 	if(ctx->debugFileName != NULL) {
 		ctx->debugFile = fopen(ctx->debugFileName, "w");
@@ -754,48 +796,8 @@ rsksiInitModule(rsksictx ctx) {
 
 	KSI_CTX_setOption(ctx->ksi_ctx, KSI_OPT_AGGR_HMAC_ALGORITHM, (void*)((size_t)ctx->hmacAlg));
 
-	if (ctx->syncMode != LOGSIG_SYNCHRONOUS) /* in async mode receives the config itself */
-		goto skip_config;
-
-	res = KSI_receiveAggregatorConfig(ctx->ksi_ctx, &config);
-	if(res == KSI_OK) {
-		if (KSI_Config_getMaxRequests(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
-			tmpInt = KSI_Integer_getUInt64(ksi_int);
-			ctx->max_requests=tmpInt;
-			report(ctx, "KSI gateway has reported a max requests value of %llu",
-				(long long unsigned) tmpInt);
-		}
-
-		ksi_int = NULL;
-		if(KSI_Config_getMaxLevel(config, &ksi_int) == KSI_OK && ksi_int != NULL) {
-			tmpInt = KSI_Integer_getUInt64(ksi_int);
-			report(ctx, "KSI gateway has reported a max level value of %llu",
-				(long long unsigned) tmpInt);
-			if(ctx->blockLevelLimit > tmpInt) {
-				report(ctx, "Decreasing the configured block level limit from %llu to %llu "
-				"reported by KSI gateway",
-				(long long unsigned) ctx->blockLevelLimit,
-				(long long unsigned) tmpInt);
-				ctx->blockLevelLimit=tmpInt;
-			}
-			else if(tmpInt < 2) {
-				report(ctx, "KSI gateway has reported an invalid level limit value (%llu), "
-					"plugin disabled", (long long unsigned) tmpInt);
-				ctx->disabled = true;
-				res = KSI_INVALID_ARGUMENT;
-				goto done;
-			}
-		}
-	}
-	else {
-		reportKSIAPIErr(ctx, NULL, "KSI_receiveAggregatorConfig", res);
-	}
-
-skip_config:
 	create_signer_thread(ctx);
 
-done:
-	KSI_Config_free(config);
 	return res;
 }
 
@@ -1371,7 +1373,7 @@ cleanup:
 }
 
 static bool
-handle_ksi_config(rsksictx ctx, KSI_AsyncHandle *respHandle, KSI_AsyncService *as) {
+handle_ksi_async_config(rsksictx ctx, KSI_AsyncHandle *respHandle, KSI_AsyncService *as) {
 	KSI_Config *config = NULL;
 	KSI_Integer *ksi_int;
 	uint64_t tmpInt;
@@ -1453,7 +1455,7 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 		CHECK_KSI_API(KSI_AsyncHandle_getState(respHandle, &state), ctx, "KSI_AsyncHandle_getState");
 
 		if(state == KSI_ASYNC_STATE_PUSH_CONFIG_RECEIVED) {
-			handle_ksi_config(ctx, respHandle, as);
+			handle_ksi_async_config(ctx, respHandle, as);
 			KSI_AsyncHandle_free(respHandle);
 		}
 		else if(state == KSI_ASYNC_STATE_RESPONSE_RECEIVED) {
