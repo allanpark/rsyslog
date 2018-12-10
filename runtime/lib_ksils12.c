@@ -143,12 +143,12 @@ done:	return;
 static const char *
 level2str(int level) {
 	switch (level) {
-		case KSI_LOG_DEBUG: return "DEBUG";
-		case KSI_LOG_INFO: return "INFO";
-		case KSI_LOG_NOTICE: return "NOTICE";
-		case KSI_LOG_WARN: return "WARN";
-		case KSI_LOG_ERROR: return "ERROR";
-		default: return "UNKNOWN LOG LEVEL";
+	case KSI_LOG_DEBUG: return "DEBUG";
+	case KSI_LOG_INFO: return "INFO";
+	case KSI_LOG_NOTICE: return "NOTICE";
+	case KSI_LOG_WARN: return "WARN";
+	case KSI_LOG_ERROR: return "ERROR";
+	default: return "UNKNOWN LOG LEVEL";
 	}
 }
 
