@@ -1632,7 +1632,8 @@ void *signer_thread(void *arg) {
 	}
 	else {
 		for (i = 0; i < ctx->aggregatorEndpointCount; i++) {
-			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
+			res = KSI_AsyncService_addEndpoint(as,
+					ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
 			if (res != KSI_OK) {
 				//This can fail if the protocol is not supported by async api.
 				reportKSIAPIErr(ctx, NULL, "KSI_AsyncService_addEndpoint", res);
