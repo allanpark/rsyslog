@@ -141,14 +141,14 @@ done:	return;
 }
 
 static const char *level2str(int level) {
-        switch (level) {
-                case KSI_LOG_DEBUG: return "DEBUG";
-                case KSI_LOG_INFO: return "INFO";
-                case KSI_LOG_NOTICE: return "NOTICE";
-                case KSI_LOG_WARN: return "WARN";
-                case KSI_LOG_ERROR: return "ERROR";
-                default: return "UNKNOWN LOG LEVEL";
-        }
+	switch (level) {
+		case KSI_LOG_DEBUG: return "DEBUG";
+		case KSI_LOG_INFO: return "INFO";
+		case KSI_LOG_NOTICE: return "NOTICE";
+		case KSI_LOG_WARN: return "WARN";
+		case KSI_LOG_ERROR: return "ERROR";
+		default: return "UNKNOWN LOG LEVEL";
+	}
 }
 
 void
@@ -719,7 +719,8 @@ int rsksiStreamLogger(void *logCtx, int logLevel, const char *message)
 	if (f != NULL) {
 		flockfile(f);  /* for thread safety */
 		if (strftime(time_buf, sizeof(time_buf), "%d.%m.%Y %H:%M:%S", tm_info)) {
-			if (fprintf(f, "%s [%s] %lu - %s\n", level2str(logLevel), time_buf, pthread_self(), message) > 0) { }
+			if (fprintf(f, "%s [%s] %lu - %s\n", level2str(logLevel), time_buf,
+				pthread_self(), message) > 0) { }
 		}
 		funlockfile(f);
 	}
@@ -1611,7 +1612,8 @@ void *signer_thread(void *arg) {
 	}
 	else {
 		for (i = 0; i < ctx->aggregatorEndpointCount; i++) {
-			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId, ctx->aggregatorKey);
+			res = KSI_AsyncService_addEndpoint(as, ctx->aggregatorEndpoints[i], ctx->aggregatorId,
+							ctx->aggregatorKey);
 			if (res != KSI_OK) {
 				//This can fail if the protocol is not supported by async api.
 				//in this case the plugin will fall back to sync api

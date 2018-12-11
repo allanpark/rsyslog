@@ -1472,7 +1472,8 @@ process_requests_async(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as, FIL
 			KSI_AsyncHandle_getExtError(respHandle, &extError);
 			KSI_AsyncHandle_getErrorMessage(respHandle, &errorMsg);
 			report(ctx, "Asynchronous request returned error %s (%d), %lu %s",
-				KSI_getErrorString(ksi_status), ksi_status, extError, errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
+				KSI_getErrorString(ksi_status), ksi_status, extError,
+					errorMsg ? KSI_Utf8String_cstr(errorMsg) : "");
 			KSI_AsyncHandle_free(respHandle);
 
 			if(item)
@@ -1578,7 +1579,8 @@ request_async_config(rsksictx ctx, KSI_CTX *ksi_ctx, KSI_AsyncService *as) {
 	CHECK_KSI_API(KSI_AggregationReq_new(ksi_ctx, &cfgReq), ctx, "KSI_AggregationReq_new");
 	CHECK_KSI_API(KSI_Config_new(ksi_ctx, &cfg), ctx, "KSI_Config_new");
 	CHECK_KSI_API(KSI_AggregationReq_setConfig(cfgReq, cfg), ctx, "KSI_AggregationReq_setConfig");
-	CHECK_KSI_API(KSI_AsyncAggregationHandle_new(ksi_ctx, cfgReq, &cfgHandle), ctx, "KSI_AsyncAggregationHandle_new");
+	CHECK_KSI_API(KSI_AsyncAggregationHandle_new(ksi_ctx, cfgReq, &cfgHandle), ctx,
+			"KSI_AsyncAggregationHandle_new");
 	CHECK_KSI_API(KSI_AsyncService_addRequest(as, cfgHandle), ctx, "KSI_AsyncService_addRequest");
 
 	bSuccess = true;
@@ -1693,7 +1695,8 @@ void *signer_thread(void *arg) {
 				}
 			} else if (item->type == QITEM_NEW_FILE) {
 				ksiFile = (FILE*) item->arg;
-				request_async_config(ctx, ksi_ctx, as); 				/* renew the config when opening a new file */
+				request_async_config(ctx, ksi_ctx, as);
+				/* renew the config when opening a new file */
 			} else if (item->type == QITEM_QUIT) {
 				if (ksiFile)
 					fclose(ksiFile);
